@@ -356,9 +356,17 @@
             const subtitleParts = [];
             if (sources.includes("KOReader")) subtitleParts.push("KOReader page-level statistics uploads");
             if (sources.includes("CWA")) subtitleParts.push("CWA Kobo sync sessions");
-            const subtitle = subtitleParts.length
+            let subtitle = subtitleParts.length
                 ? `Derived from ${subtitleParts.join(" and ")}.`
                 : "No reading sources are currently active.";
+            if (sources.includes("CWA")) {
+                subtitle += " CWA reading time is estimated from progress change and audiobook duration — not actual time spent reading.*";
+                TAB_CONFIG.reading.cards[2][0] = "Total Reading*";
+                TAB_CONFIG.reading.cards[2][2] = "Accumulated reading time — CWA time is estimated from progress delta, not actual reading time";
+            } else {
+                TAB_CONFIG.reading.cards[2][0] = "Total Reading";
+                TAB_CONFIG.reading.cards[2][2] = "Accumulated reading time";
+            }
 
             TAB_CONFIG.reading.subtitle = subtitle;
             TAB_CONFIG.reading.emptyBody = sources.length
