@@ -4515,10 +4515,11 @@ def _merge_reading_daily(daily_a, daily_b, tz):
     map_a = {row["date"]: int(row.get("seconds") or 0) for row in daily_a or []}
     map_b = {row["date"]: int(row.get("seconds") or 0) for row in daily_b or []}
 
-    return [
-        {"date": day.isoformat(), "seconds": map_a.get(day.isoformat(), 0) + map_b.get(day.isoformat(), 0)}
-        for day in _date_series(start_date, end_date)
-    ]
+    result = []
+    for day in _date_series(start_date, end_date):
+        key = day.isoformat()
+        result.append({"date": key, "seconds": map_a.get(key, 0) + map_b.get(key, 0)})
+    return result
 
 
 def _merge_reading_heatmap(heatmap_a, heatmap_b):
@@ -4590,7 +4591,7 @@ def _build_reading_stats_payload(tz):
     now_local = datetime.now(tz).date()
 
     stats = {
-        "booksTracked": int(ko_summary.get("booksTracked") or 0) + int(cwa_summary.get("booksTracked") or 0),
+        "booksTracked": len(all_tracked),
         "daysRead": len(all_activity),
         "totalSeconds": int(ko_summary.get("totalSeconds") or 0) + int(cwa_summary.get("totalSeconds") or 0),
         "pagesRead": int(ko_summary.get("pagesRead") or 0),

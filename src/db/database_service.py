@@ -1403,8 +1403,6 @@ class DatabaseService:
 
             return normalized
 
-    # CWA reading session stats (derived from ReadingSession where leader_client='CWA')
-
     def _get_cwa_sessions_query(self, session):
         """Base query for CWA-led reading sessions."""
         return session.query(ReadingSession).filter(
@@ -1542,14 +1540,11 @@ class DatabaseService:
                 for date_key, values in sorted(buckets.items())
             ]
 
-        return [
-            {
-                "date": day.isoformat(),
-                "seconds": buckets[day.isoformat()]["seconds"],
-                "sessions": buckets[day.isoformat()]["sessions"],
-            }
-            for day in self._date_range(start_date, end_date)
-        ]
+        result = []
+        for day in self._date_range(start_date, end_date):
+            key = day.isoformat()
+            result.append({"date": key, "seconds": buckets[key]["seconds"], "sessions": buckets[key]["sessions"]})
+        return result
 
     def _get_cwa_activity_dates(self, session, tz_name: str) -> set:
         rows = (
