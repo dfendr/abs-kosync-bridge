@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.api.api_clients import ABSClient, KoSyncClient
 from src.api.booklore_client import BookloreClient
+from src.sync_clients.abs_sync_client import ABSSyncClient
 from src.sync_clients.storyteller_sync_client import StorytellerSyncClient
 from src.sync_clients.sync_client_interface import LocatorResult, UpdateProgressRequest
 
@@ -264,4 +265,82 @@ def test_storyteller_update_returns_rich_updated_state():
         "position": 312,
         "match_index": 312,
     }
+
+
+def test_abs_time_listened_zero_when_ebook_leader():
+    """When an ebook client leads the sync, timeListened must be 0 so ABS
+    doesn't count reading time as listening time."""
+    with patch.dict(os.environ, {"ABS_SERVER": "http://abs.local", "ABS_KEY": "token"}, clear=False):
+        abs_client = ABSClient()
+        abs_client.create_session = MagicMock(return_value="session-1")
+        abs_client.close_session = MagicMock(return_value=True)
+        abs_client.get_progress = MagicMock(return_value={"currentTime": 500.0})
+
+        captured = {}
+
+        def _fake_post(url, json=None, timeout=None):
+            captured["payload"] = dict(json)
+            return SimpleNamespace(status_code=200, text="ok")
+
+        abs_client.session.post = MagicMock(side_effect=_fake_post)
+
+        transcriber = MagicMock()
+        transcriber.find_time_for_text.return_value = 1200.0
+        ebook_parser = MagicMock()
+
+        client = ABSSyncClient(abs_client, transcriber, ebook_parser)
+
+        book = SimpleNamespace(
+            abs_id="abs-1", abs_title="Test Book",
+            transcript_file="transcript.json", duration=3600.0,
+        )
+        locator = LocatorResult(percentage=0.5, match_index=100)
+        request = UpdateProgressRequest(
+            locator_result=locator, txt="some text", leader_is_ebook=True,
+        )
+
+        result = client.update_progress(book, request)
+
+        assert result.success is True
+        assert captured["payload"]["timeListened"] == 0.0
+        assert captured["payload"]["currentTime"] == 1200.0
+
+
+def test_abs_time_listened_nonzero_when_audio_leader():
+    """When an audio client leads the sync, timeListened should reflect
+    the actual timestamp delta."""
+    with patch.dict(os.environ, {"ABS_SERVER": "http://abs.local", "ABS_KEY": "token"}, clear=False):
+        abs_client = ABSClient()
+        abs_client.create_session = MagicMock(return_value="session-1")
+        abs_client.close_session = MagicMock(return_value=True)
+        abs_client.get_progress = MagicMock(return_value={"currentTime": 500.0})
+
+        captured = {}
+
+        def _fake_post(url, json=None, timeout=None):
+            captured["payload"] = dict(json)
+            return SimpleNamespace(status_code=200, text="ok")
+
+        abs_client.session.post = MagicMock(side_effect=_fake_post)
+
+        transcriber = MagicMock()
+        transcriber.find_time_for_text.return_value = 1200.0
+        ebook_parser = MagicMock()
+
+        client = ABSSyncClient(abs_client, transcriber, ebook_parser)
+
+        book = SimpleNamespace(
+            abs_id="abs-1", abs_title="Test Book",
+            transcript_file="transcript.json", duration=3600.0,
+        )
+        locator = LocatorResult(percentage=0.5, match_index=100)
+        request = UpdateProgressRequest(
+            locator_result=locator, txt="some text", leader_is_ebook=False,
+        )
+
+        result = client.update_progress(book, request)
+
+        assert result.success is True
+        assert captured["payload"]["timeListened"] == 700.0  # 1200 - 500
+        assert captured["payload"]["currentTime"] == 1200.0
 

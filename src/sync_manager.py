@@ -2118,6 +2118,7 @@ class SyncManager:
                             locator,
                             txt,
                             previous_location=client_state.previous_pct if client_state else None,
+                            leader_is_ebook=(leader != primary_audio_client),
                         )
                         result = client.update_progress(book, request)
                         results[client_name] = result
