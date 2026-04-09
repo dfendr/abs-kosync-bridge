@@ -4476,47 +4476,129 @@ def _build_listening_stats_payload(tz):
     }
 
 
-def _build_reading_stats_payload(tz):
-    tz_name = getattr(tz, "key", str(tz))
-    summary = database_service.get_koreader_dashboard_summary(tz_name)
-    daily = database_service.get_koreader_daily_totals(7, tz_name)
-    heatmap = database_service.get_koreader_heatmap(datetime.now(tz).year, tz_name)
-    recent_sessions = database_service.get_koreader_recent_sessions(10, tz_name)
-    activity_dates = database_service.get_koreader_activity_dates(tz_name)
+def _build_source_reading_stats(tz_name, tz, get_summary, get_daily, get_heatmap, get_recent, get_dates):
+    """Build reading stats for a single source (KOReader or CWA)."""
+    summary = get_summary(tz_name)
+    daily = get_daily(7, tz_name)
+    heatmap = get_heatmap(datetime.now(tz).year, tz_name)
+    recent_sessions = get_recent(10, tz_name)
+    activity_dates = get_dates(tz_name)
 
-    if not summary and not any(int(row.get("seconds") or 0) > 0 for row in daily):
-        return {
-            "available": False,
-            "stats": None,
-            "daily": daily,
-            "heatmap": heatmap,
-            "recentSessions": [],
-            "activityDates": [],
-            "trackedBookIds": [],
-        }
-
-    stats = summary or {}
-    stats.setdefault("booksTracked", 0)
-    stats.setdefault("daysRead", len(activity_dates))
-    stats.setdefault("totalSeconds", 0)
-    stats.setdefault("pagesRead", 0)
-    stats.setdefault("weekTotalSeconds", sum(int(row.get("seconds") or 0) for row in daily))
-    stats.setdefault("dailyAverageSeconds", int(stats["weekTotalSeconds"] / max(len(daily), 1)))
-    stats.setdefault("bestDay", max(daily, key=lambda row: int(row.get("seconds") or 0), default=None))
-    stats.setdefault("currentStreakDays", _calculate_current_streak_from_dates(
-        {datetime.fromisoformat(day).date() for day in activity_dates},
-        datetime.now(tz).date(),
-    ))
-    stats.setdefault("trackedBookIds", [])
-
+    has_data = summary or any(int(row.get("seconds") or 0) > 0 for row in daily)
     return {
-        "available": True,
-        "stats": stats,
+        "available": has_data,
+        "summary": summary,
         "daily": daily,
         "heatmap": heatmap,
         "recentSessions": recent_sessions,
         "activityDates": activity_dates,
-        "trackedBookIds": stats.get("trackedBookIds") or [],
+    }
+
+
+def _merge_reading_daily(daily_a, daily_b, tz):
+    """Merge two daily-totals series into one, filling the trailing 7-day window."""
+    end_date = datetime.now(tz).date()
+    start_date = end_date - timedelta(days=6)
+    map_a = {row["date"]: int(row.get("seconds") or 0) for row in daily_a or []}
+    map_b = {row["date"]: int(row.get("seconds") or 0) for row in daily_b or []}
+
+    return [
+        {"date": day.isoformat(), "seconds": map_a.get(day.isoformat(), 0) + map_b.get(day.isoformat(), 0)}
+        for day in _date_series(start_date, end_date)
+    ]
+
+
+def _merge_reading_heatmap(heatmap_a, heatmap_b):
+    """Merge two heatmap series by summing seconds per date."""
+    merged = defaultdict(lambda: 0)
+    for row in heatmap_a or []:
+        merged[row["date"]] += int(row.get("seconds") or 0)
+    for row in heatmap_b or []:
+        merged[row["date"]] += int(row.get("seconds") or 0)
+    return [{"date": k, "seconds": v} for k, v in sorted(merged.items())]
+
+
+def _build_reading_stats_payload(tz):
+    tz_name = getattr(tz, "key", str(tz))
+
+    koreader = _build_source_reading_stats(
+        tz_name, tz,
+        database_service.get_koreader_dashboard_summary,
+        database_service.get_koreader_daily_totals,
+        database_service.get_koreader_heatmap,
+        database_service.get_koreader_recent_sessions,
+        database_service.get_koreader_activity_dates,
+    )
+    cwa = _build_source_reading_stats(
+        tz_name, tz,
+        database_service.get_cwa_dashboard_summary,
+        database_service.get_cwa_daily_totals,
+        database_service.get_cwa_heatmap,
+        database_service.get_cwa_recent_sessions,
+        database_service.get_cwa_activity_dates,
+    )
+
+    sources = []
+    if koreader["available"]:
+        sources.append("KOReader")
+    if cwa["available"]:
+        sources.append("CWA")
+
+    if not sources:
+        return {
+            "available": False,
+            "stats": None,
+            "daily": koreader["daily"],
+            "heatmap": koreader["heatmap"],
+            "recentSessions": [],
+            "activityDates": [],
+            "trackedBookIds": [],
+            "sources": sources,
+        }
+
+    ko_summary = koreader["summary"] or {}
+    cwa_summary = cwa["summary"] or {}
+
+    ko_activity = {datetime.fromisoformat(d).date() for d in koreader["activityDates"]} if koreader["activityDates"] else set()
+    cwa_activity = {datetime.fromisoformat(d).date() for d in cwa["activityDates"]} if cwa["activityDates"] else set()
+    all_activity = ko_activity | cwa_activity
+
+    merged_daily = _merge_reading_daily(koreader["daily"], cwa["daily"], tz)
+    merged_heatmap = _merge_reading_heatmap(koreader["heatmap"], cwa["heatmap"])
+    merged_sessions = _merge_recent_sessions(koreader["recentSessions"], cwa["recentSessions"], limit=10)
+
+    all_tracked = sorted(
+        set(ko_summary.get("trackedBookIds") or [])
+        | set(cwa_summary.get("trackedBookIds") or [])
+    )
+
+    week_total = sum(int(row.get("seconds") or 0) for row in merged_daily)
+    best_day = max(merged_daily, key=lambda row: int(row.get("seconds") or 0), default=None)
+    now_local = datetime.now(tz).date()
+
+    stats = {
+        "booksTracked": int(ko_summary.get("booksTracked") or 0) + int(cwa_summary.get("booksTracked") or 0),
+        "daysRead": len(all_activity),
+        "totalSeconds": int(ko_summary.get("totalSeconds") or 0) + int(cwa_summary.get("totalSeconds") or 0),
+        "pagesRead": int(ko_summary.get("pagesRead") or 0),
+        "trackedBookIds": all_tracked,
+        "weekTotalSeconds": week_total,
+        "dailyAverageSeconds": int(week_total / max(len(merged_daily), 1)),
+        "bestDay": best_day,
+        "currentStreakDays": _calculate_current_streak_from_dates(all_activity, now_local),
+    }
+
+    activity_dates = [d.isoformat() for d in sorted(all_activity)]
+
+    return {
+        "available": True,
+        "stats": stats,
+        "daily": merged_daily,
+        "heatmap": merged_heatmap,
+        "recentSessions": merged_sessions,
+        "activityDates": activity_dates,
+        "trackedBookIds": all_tracked,
+        "sources": sources,
     }
 
 
@@ -4644,6 +4726,7 @@ def api_stats():
             "recentSessions": [],
             "activityDates": [],
             "trackedBookIds": [],
+            "sources": [],
         }
 
     combined = _build_combined_stats_payload(
@@ -4660,12 +4743,14 @@ def api_stats():
             "daily": reading.get("daily"),
             "heatmap": reading.get("heatmap"),
             "recentSessions": reading.get("recentSessions"),
+            "sources": reading.get("sources") or [],
         } if reading else {
             "available": False,
             "stats": None,
             "daily": [],
             "heatmap": [],
             "recentSessions": [],
+            "sources": [],
         },
         "combined": combined,
     }

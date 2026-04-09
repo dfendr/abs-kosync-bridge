@@ -1403,6 +1403,165 @@ class DatabaseService:
 
             return normalized
 
+    # CWA reading session stats (derived from ReadingSession where leader_client='CWA')
+
+    def _get_cwa_sessions_query(self, session):
+        """Base query for CWA-led reading sessions."""
+        return session.query(ReadingSession).filter(
+            ReadingSession.leader_client == 'CWA'
+        )
+
+    def get_cwa_dashboard_summary(self, tz_name: str) -> Optional[dict]:
+        """Get high-level CWA reading stats for the dashboard."""
+        from sqlalchemy import func
+
+        with self.get_session() as session:
+            base = self._get_cwa_sessions_query(session)
+            total_seconds = int(
+                base.with_entities(func.coalesce(func.sum(ReadingSession.duration_seconds), 0)).scalar() or 0
+            )
+            session_count = int(
+                base.with_entities(func.count(ReadingSession.id)).scalar() or 0
+            )
+            if session_count == 0:
+                return None
+
+            tracked_book_ids = sorted({
+                row[0] for row in base.with_entities(ReadingSession.abs_id).distinct().all()
+                if row[0]
+            })
+            books_tracked = len(tracked_book_ids)
+
+            now_local = datetime.now(ZoneInfo(tz_name)).date()
+            activity_dates = self._get_cwa_activity_dates(session, tz_name)
+            if not activity_dates:
+                return None
+
+            week_start = now_local - timedelta(days=6)
+            daily = self._build_cwa_daily_totals(session, tz_name, start_date=week_start, end_date=now_local)
+            week_total = sum(day["seconds"] for day in daily)
+            best_day = max(daily, key=lambda day: day["seconds"], default=None)
+
+            return {
+                "booksTracked": books_tracked,
+                "daysRead": len(activity_dates),
+                "totalSeconds": total_seconds,
+                "sessionCount": session_count,
+                "trackedBookIds": tracked_book_ids,
+                "weekTotalSeconds": week_total,
+                "dailyAverageSeconds": int(week_total / max(len(daily), 1)),
+                "bestDay": best_day,
+                "currentStreakDays": self._calculate_streak(activity_dates, now_local),
+            }
+
+    def get_cwa_daily_totals(self, days: int, tz_name: str) -> list[dict]:
+        """Get recent CWA daily totals."""
+        with self.get_session() as session:
+            end_date = datetime.now(ZoneInfo(tz_name)).date()
+            start_date = end_date - timedelta(days=max(int(days or 1) - 1, 0))
+            return self._build_cwa_daily_totals(session, tz_name, start_date=start_date, end_date=end_date)
+
+    def get_cwa_activity_dates(self, tz_name: str) -> list[str]:
+        """Get all CWA activity dates in the configured timezone."""
+        with self.get_session() as session:
+            dates = self._get_cwa_activity_dates(session, tz_name)
+            return [day.isoformat() for day in sorted(dates)]
+
+    def get_cwa_heatmap(self, year: int, tz_name: str) -> list[dict]:
+        """Get CWA daily totals for one calendar year."""
+        with self.get_session() as session:
+            start_date = datetime(year, 1, 1).date()
+            end_date = datetime(year, 12, 31).date()
+            return self._build_cwa_daily_totals(session, tz_name, start_date=start_date, end_date=end_date)
+
+    def get_cwa_recent_sessions(self, limit: int, tz_name: str) -> list[dict]:
+        """Get recent CWA reading sessions."""
+        with self.get_session() as session:
+            rows = (
+                self._get_cwa_sessions_query(session)
+                .order_by(ReadingSession.end_time.desc())
+                .limit(max(int(limit or 10), 1))
+                .all()
+            )
+            if not rows:
+                return []
+
+            abs_ids = {row.abs_id for row in rows if row.abs_id}
+            books_by_id = {}
+            if abs_ids:
+                books = session.query(Book).filter(Book.abs_id.in_(abs_ids)).all()
+                books_by_id = {book.abs_id: book for book in books}
+
+            normalized = []
+            for row in rows:
+                book = books_by_id.get(row.abs_id)
+                normalized.append({
+                    "id": f"cwa-reading-{row.abs_id}-{int(row.start_time)}",
+                    "activityType": "reading",
+                    "absId": row.abs_id,
+                    "title": getattr(book, "abs_title", None) or "Unknown book",
+                    "author": getattr(book, "abs_author", None),
+                    "durationSeconds": int(row.duration_seconds),
+                    "startedAt": int(row.start_time),
+                    "endedAt": int(row.end_time),
+                    "leaderClient": "CWA",
+                })
+            return normalized
+
+    def _build_cwa_daily_totals(
+        self,
+        session,
+        tz_name: str,
+        start_date=None,
+        end_date=None,
+    ) -> list[dict]:
+        query = self._get_cwa_sessions_query(session).with_entities(
+            ReadingSession.start_time, ReadingSession.duration_seconds
+        )
+        if start_date is not None:
+            start_epoch = datetime.combine(
+                start_date, datetime.min.time(), tzinfo=ZoneInfo(tz_name),
+            ).timestamp()
+            query = query.filter(ReadingSession.start_time >= start_epoch)
+        if end_date is not None:
+            next_day = end_date + timedelta(days=1)
+            end_epoch = datetime.combine(
+                next_day, datetime.min.time(), tzinfo=ZoneInfo(tz_name),
+            ).timestamp()
+            query = query.filter(ReadingSession.start_time < end_epoch)
+
+        buckets = defaultdict(lambda: {"seconds": 0, "sessions": 0})
+        for row in query.all():
+            date_key = self._local_date_from_epoch(row.start_time, tz_name)
+            buckets[date_key]["seconds"] += int(max(row.duration_seconds or 0, 0))
+            buckets[date_key]["sessions"] += 1
+
+        if start_date is None or end_date is None:
+            return [
+                {"date": date_key, "seconds": values["seconds"], "sessions": values["sessions"]}
+                for date_key, values in sorted(buckets.items())
+            ]
+
+        return [
+            {
+                "date": day.isoformat(),
+                "seconds": buckets[day.isoformat()]["seconds"],
+                "sessions": buckets[day.isoformat()]["sessions"],
+            }
+            for day in self._date_range(start_date, end_date)
+        ]
+
+    def _get_cwa_activity_dates(self, session, tz_name: str) -> set:
+        rows = (
+            self._get_cwa_sessions_query(session)
+            .with_entities(ReadingSession.start_time)
+            .all()
+        )
+        return {
+            datetime.fromisoformat(self._local_date_from_epoch(row.start_time, tz_name)).date()
+            for row in rows
+        }
+
     # Reading session operations
     def record_reading_session(self, abs_id: str, session_type: str, start_time: float,
                                end_time: float, duration_seconds: int,

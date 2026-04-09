@@ -257,10 +257,10 @@
             <div class="hero-top">
                 <div>
                     <h1>Unified activity dashboard</h1>
-                    <p>Live listening stats come from Audiobookshelf, reading stats come from KOReader uploads, and the combined view merges both into one BookBridge-native dashboard.</p>
+                    <p>Live listening stats come from Audiobookshelf, reading stats come from KOReader uploads and CWA Kobo sync, and the combined view merges both into one BookBridge-native dashboard.</p>
                     <div class="hero-meta">
                         <div class="hero-chip"><strong>Listening</strong> ABS live data</div>
-                        <div class="hero-chip"><strong>Reading</strong> KOReader sync uploads</div>
+                        <div class="hero-chip" id="reading-source-chip"><strong>Reading</strong> <span id="reading-source-label">Loading…</span></div>
                         <div class="hero-chip"><strong>Timezone</strong> <span id="timezone-chip">Loading…</span></div>
                     </div>
                 </div>
@@ -306,6 +306,7 @@
         const tabButtons = Array.from(document.querySelectorAll(".tab-btn"));
         const statusListening = document.getElementById("status-listening");
         const statusReading = document.getElementById("status-reading");
+        const readingSourceLabel = document.getElementById("reading-source-label");
         const dayDetailBackdrop = document.getElementById("day-detail-backdrop");
         const dayDetailTitle = document.getElementById("day-detail-title");
         const dayDetailSubtitle = document.getElementById("day-detail-subtitle");
@@ -326,7 +327,7 @@
                 title: "Combined activity",
                 subtitle: "Reading and listening merged into one timeline, one heatmap, and one recent activity stream.",
                 emptyTitle: "No combined activity yet",
-                emptyBody: "Stats will appear here as soon as either Audiobookshelf listening data or KOReader reading uploads are available.",
+                emptyBody: "Stats will appear here as soon as either Audiobookshelf listening data or reading data from KOReader or CWA is available.",
                 cards: [
                     ["Active Days", d => d.stats?.activeDays ?? 0, "Days with any synced activity"],
                     ["Total Activity", d => formatDurationCompact(d.stats?.totalSeconds ?? 0), "Reading + listening time"],
@@ -336,14 +337,14 @@
             },
             reading: {
                 title: "Reading activity",
-                subtitle: "Derived from KOReader page-level statistics uploads and grouped into approximate dashboard sessions.",
+                subtitle: "Derived from KOReader page-level statistics uploads and CWA Kobo sync sessions.",
                 emptyTitle: "No reading stats yet",
-                emptyBody: "Use the Bridge Sync plugin menu item “Sync Reading Stats” after linking books in BookBridge to populate this view.",
+                emptyBody: "Enable KOReader sync uploads or CWA reading sync and link books in BookBridge to populate this view.",
                 cards: [
-                    ["Books Tracked", d => d.stats?.booksTracked ?? 0, "Linked KOReader books with activity"],
+                    ["Books Tracked", d => d.stats?.booksTracked ?? 0, "Linked books with reading activity"],
                     ["Days Read", d => d.stats?.daysRead ?? 0, "Days with reading events"],
                     ["Total Reading", d => formatDurationCompact(d.stats?.totalSeconds ?? 0), "Accumulated reading time"],
-                    ["Pages Read", d => d.stats?.pagesRead ?? 0, "Uploaded page events"]
+                    ["Pages Read", d => d.stats?.pagesRead ?? 0, "KOReader page events"]
                 ]
             },
             listening: {
@@ -378,6 +379,23 @@
         function setStatusPill(el, available) {
             el.classList.toggle("available", Boolean(available));
             el.classList.toggle("unavailable", !available);
+        }
+
+        function updateReadingSources(sources) {
+            const label = sources.length ? sources.join(" + ") : "No sources";
+            readingSourceLabel.textContent = label;
+
+            const subtitleParts = [];
+            if (sources.includes("KOReader")) subtitleParts.push("KOReader page-level statistics uploads");
+            if (sources.includes("CWA")) subtitleParts.push("CWA Kobo sync sessions");
+            const subtitle = subtitleParts.length
+                ? `Derived from ${subtitleParts.join(" and ")}.`
+                : "No reading sources are currently active.";
+
+            TAB_CONFIG.reading.subtitle = subtitle;
+            TAB_CONFIG.reading.emptyBody = sources.length
+                ? TAB_CONFIG.reading.emptyBody
+                : "Enable KOReader sync uploads or CWA reading sync to populate this view.";
         }
 
         function showLoading(message) {
@@ -490,7 +508,7 @@
 
             const books = Array.isArray(payload.books) ? payload.books : [];
             if (!books.length) {
-                dayDetailBody.innerHTML = `<div class="empty-state"><h3>No linked KOReader books that day</h3><p>This day had no linked reading activity after timezone bucketing, or the books have not been linked in BookBridge yet.</p></div>`;
+                dayDetailBody.innerHTML = `<div class="empty-state"><h3>No linked reading activity that day</h3><p>This day had no linked reading activity after timezone bucketing, or the books have not been linked in BookBridge yet.</p></div>`;
                 return;
             }
 
@@ -519,7 +537,7 @@
             openDayDetail();
             dayDetailTitle.textContent = "Books read on this day";
             dayDetailSubtitle.textContent = formatLongDate(dateStr);
-            dayDetailSummary.textContent = "Loading KOReader day details…";
+            dayDetailSummary.textContent = "Loading reading day details…";
             dayDetailBody.innerHTML = `<div class="loading"><span class="spinner" aria-hidden="true"></span><span>Loading book activity…</span></div>`;
 
             if (state.readingDayCache[dateStr]) {
@@ -542,7 +560,7 @@
         function calendarPanelSkeleton() {
             return `
                 <section class="panel">
-                    <div class="panel-head"><h3>Reading calendar</h3><span>KOReader books by day</span></div>
+                    <div class="panel-head"><h3>Reading calendar</h3><span>Books by day</span></div>
                     <div class="loading"><span class="spinner" aria-hidden="true"></span><span>Loading monthly reading calendar…</span></div>
                 </section>
             `;
@@ -636,7 +654,7 @@
 
             return `
                 <section class="panel">
-                    <div class="panel-head"><h3>Reading calendar</h3><span>KOReader books by day</span></div>
+                    <div class="panel-head"><h3>Reading calendar</h3><span>Books by day</span></div>
                     <div class="calendar-panel">
                         <div class="calendar-nav">
                             <div class="calendar-month-title">${escapeHtml(formatMonthLabel(month))}</div>
@@ -876,7 +894,7 @@
                     })
                     .catch(error => {
                         if (!container || state.activeTab !== "reading") return;
-                        container.outerHTML = `<section class="panel"><div class="panel-head"><h3>Reading calendar</h3><span>KOReader books by day</span></div><div class="empty-state"><h3>Calendar unavailable</h3><p>${escapeHtml(error.message || "Unknown error")}</p></div></section>`;
+                        container.outerHTML = `<section class="panel"><div class="panel-head"><h3>Reading calendar</h3><span>Books by day</span></div><div class="empty-state"><h3>Calendar unavailable</h3><p>${escapeHtml(error.message || "Unknown error")}</p></div></section>`;
                     });
             }
         }
@@ -895,6 +913,7 @@
                 lastUpdated.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
                 setStatusPill(statusListening, state.payload?.listening?.available);
                 setStatusPill(statusReading, state.payload?.reading?.available);
+                updateReadingSources(state.payload?.reading?.sources || []);
                 renderDashboard();
             } catch (error) {
                 console.error(error);
