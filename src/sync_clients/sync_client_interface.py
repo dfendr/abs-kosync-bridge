@@ -34,6 +34,7 @@ class UpdateProgressRequest:
     txt: Optional[str] = None
     # can be percentage or timestamp (ABS)
     previous_location: Optional[float] = None
+    leader_is_ebook: bool = False
 
 @dataclass
 class SyncResult:

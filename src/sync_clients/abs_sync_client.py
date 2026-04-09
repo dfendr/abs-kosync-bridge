@@ -166,6 +166,7 @@ class ABSSyncClient(SyncClient):
 
     def update_progress(self, book: Book, request: UpdateProgressRequest) -> SyncResult:
         book_title = book.abs_title or 'Unknown Book'
+        self._leader_is_ebook = getattr(request, 'leader_is_ebook', False)
         if request.locator_result.percentage == 0.0:
             logger.info(f"🔄 '{book_title}' Locator percentage is 0.0% — Setting ABS progress to start of book")
             result, final_ts = self._update_abs_progress_with_offset(book.abs_id, 0.0)
@@ -232,14 +233,15 @@ class ABSSyncClient(SyncClient):
         if self.abs_progress_offset != 0:
             logger.debug(f"   📐 Adjusted timestamp: {ts}s → {adjusted_ts}s (offset: {self.abs_progress_offset:+.1f}s)")
 
-        # Calculate time_listened as the difference between new and previous position
-        time_listened = max(0, adjusted_ts - prev_abs_ts)
-
-        # Don't send negative time_listened (shouldn't happen, but safety check)
-        if time_listened < 0:
-            time_listened = 0
-
-        logger.debug(f"   ⏱️ time_listened: {time_listened:.1f}s (prev: {prev_abs_ts:.1f}s → new: {adjusted_ts:.1f}s)")
+        # When an ebook client (CWA, Storyteller, etc.) is the leader, the timestamp
+        # is derived from text alignment, not actual audio playback. Send timeListened=0
+        # so ABS updates its position without inflating listening statistics.
+        if getattr(self, '_leader_is_ebook', False):
+            time_listened = 0.0
+            logger.debug(f"   ⏱️ time_listened: 0.0s (ebook leader — not counting as listening)")
+        else:
+            time_listened = max(0.0, adjusted_ts - prev_abs_ts)
+            logger.debug(f"   ⏱️ time_listened: {time_listened:.1f}s (prev: {prev_abs_ts:.1f}s → new: {adjusted_ts:.1f}s)")
         abs_ok = self.abs_client.update_progress(abs_id, adjusted_ts, time_listened)
         if isinstance(abs_ok, dict) and abs_ok.get("success"):
             try:
