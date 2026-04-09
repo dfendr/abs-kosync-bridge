@@ -429,12 +429,25 @@ def inject_global_vars():
         val = os.environ.get(key, 'false')
         return val.lower() in ('true', '1', 'yes', 'on')
 
+    active_page_map = {
+        'index': 'dashboard',
+        'stats_view': 'stats',
+        'logs_view': 'logs',
+        'settings': 'settings',
+        'forge': 'forge',
+        'match': 'match',
+        'batch_match': 'batch_match',
+        'suggestions': 'suggestions',
+        'shelfmark': 'shelfmark',
+    }
+
     return dict(
         shelfmark_url=os.environ.get("SHELFMARK_URL", ""),
         abs_server=_display_abs_server(),
         booklore_server=os.environ.get("BOOKLORE_SERVER", ""),
         get_val=get_val,
-        get_bool=get_bool
+        get_bool=get_bool,
+        active_page=active_page_map.get(request.endpoint, ''),
     )
 
 # ---------------- BOOK LINKER HELPERS ----------------

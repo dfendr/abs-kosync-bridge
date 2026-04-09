@@ -34,6 +34,7 @@ class TestSettingsComprehensive(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.mkdtemp()
         os.environ['DATA_DIR'] = self.temp_dir
+        os.environ['TEMPLATE_DIR'] = str(Path(__file__).parent.parent / 'templates')
         
         self.mock_container = MockContainer()
         
@@ -74,20 +75,9 @@ class TestSettingsComprehensive(unittest.TestCase):
                 del os.environ[key]
 
     def _render_settings_template_source(self):
-        import src.web_server
-        template_source = (Path(__file__).parent.parent / 'templates' / 'settings.html').read_text(encoding='utf-8')
-        original_render = src.web_server.render_template
-
-        def render_from_source(_template_name, **context):
-            return src.web_server.render_template_string(template_source, **context)
-
-        src.web_server.render_template = render_from_source
-        try:
-            response = self.client.get('/settings')
-            self.assertEqual(response.status_code, 200)
-            return response.get_data(as_text=True)
-        finally:
-            src.web_server.render_template = original_render
+        response = self.client.get('/settings')
+        self.assertEqual(response.status_code, 200)
+        return response.get_data(as_text=True)
 
     @patch('src.web_server.restart_server')
     def test_all_bool_toggles(self, mock_restart):
